@@ -94,6 +94,9 @@ func main(){
 
 	//
 	server.Store = gormstore.New(server.DB, []byte(os.Getenv("API_SECRET")))
+	server.Store.SessionOpts.Secure = true
+	server.Store.SessionOpts.HttpOnly = true
+	// server.Store.SessionOpts.MaxAge = 60 * 60 * 24 * 60
 	// db cleanup every hour
 	// close quit channel to stop cleanup
 	quit := make(chan struct{})
@@ -126,7 +129,7 @@ func main(){
 
 func (s *Server) Home(c *gin.Context){
 	//
-	// s.AddUserToStore(c, 1)
+	s.AddUserToStore(c, 1)
 	//
 	c.HTML(http.StatusOK, "index.gohtml", gin.H{
 		"title": "Main website",
