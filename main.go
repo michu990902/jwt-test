@@ -117,7 +117,6 @@ func (s *Server) Home(c *gin.Context){
 }
 
 func (s *Server) Test(c *gin.Context){
-
 	token, err := c.Cookie("session")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -175,7 +174,7 @@ func (s *Server) SingIn(c *gin.Context){
 	   return
 	}
 	liveTime := 60 * 60 * 1000 // 1 hour
-	c.SetCookie("session", token, liveTime, "/", os.Getenv("URL"), false, true)
+	c.SetCookie("session", token, liveTime, "/", c.Request.Host, false, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Login succesfull",
@@ -183,7 +182,7 @@ func (s *Server) SingIn(c *gin.Context){
 }
 
 func (s *Server) SingOut(c *gin.Context){
-	c.SetCookie("session", "", -1, "/", os.Getenv("URL"), false, true)
+	c.SetCookie("session", "", -1, "/", c.Request.Host, false, true)
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Logout succesfull",
 	})
