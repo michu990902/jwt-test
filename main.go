@@ -6,7 +6,9 @@ import (
 	"log"
 	"time"
 	"html"
+	"errors"
 	"strings"
+	"strconv"
 	"net/http"
 
 	"golang.org/x/crypto/bcrypt"	
@@ -16,15 +18,13 @@ import (
 	_ "github.com/jinzhu/gorm/dialects/mysql"
 
 	
-	// jwt "github.com/dgrijalva/jwt-go"
-	// "github.com/gorilla/sessions"
-	"github.com/wader/gormstore"
+	jwt "github.com/dgrijalva/jwt-go"
 )
 
 type Server struct {
 	DB     *gorm.DB
 	Router *gin.Engine
-	Store  *gormstore.Store
+	// Store  *gormstore.Store
 }
 
 type User struct{
@@ -67,7 +67,8 @@ func (s *Server) CreateUser(nickname, email, password string){
 		Email: email,
 		Password: password,
 	}
-	u.BeforeSave()
+	//!!! do not add !!!
+	// u.BeforeSave()
 	u.Prepare()
 	err := s.DB.Create(&u).Error
 	fmt.Println(err)
@@ -91,65 +92,58 @@ func main(){
 	server.DB.AutoMigrate(&User{})
 	server.Router = gin.Default()
 
-
-	//
-	server.Store = gormstore.New(server.DB, []byte(os.Getenv("API_SECRET")))
-	server.Store.SessionOpts.Secure = true
-	server.Store.SessionOpts.HttpOnly = true
-	// server.Store.SessionOpts.MaxAge = 60 * 60 * 24 * 60
-	// db cleanup every hour
-	// close quit channel to stop cleanup
-	quit := make(chan struct{})
-	go server.Store.PeriodicCleanup(1*time.Hour, quit)
-	//
-
-	//
-	server.CreateUser("test1", "test@test.pl", "1234")
-	server.CreateUser("test2", "test2@test.pl", "zaq1@WSX")
-	//
+	// server.CreateUser("test1", "test@test.pl", "1234")
+	// server.CreateUser("test2", "test2@test.pl", "zaq1@WSX")
 
 	server.Router.LoadHTMLGlob("templates/*")
 
-	server.Router.GET("/", server.Home)
-	// server.Router.GET("/test", server.Test)
-	// server.Router.GET("/test", server.isLoggedIn(server.Test))
-	
+	server.Router.GET("/", server.Home)	
 	server.Router.POST("/singin", server.SingIn)
-	server.Router.GET("/singout", server.SingOut)
 
 	authorized := server.Router.Group("/")
-
-	authorized.Use(isLoggedIn())
+	authorized.Use(isAuthorized())
 	{
 		authorized.GET("/test", server.Test)
+		server.Router.GET("/singout", server.SingOut)
 	}
 
 	server.Router.Run(":8080")
 }
 
 func (s *Server) Home(c *gin.Context){
-	//
-	s.AddUserToStore(c, 1)
-	//
 	c.HTML(http.StatusOK, "index.gohtml", gin.H{
 		"title": "Main website",
 	})
 }
 
 func (s *Server) Test(c *gin.Context){
+
+	token, err := c.Cookie("session")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "No cookie",
+		})
+		return
+	}
+
+	data, err := s.GetDataFromToken(token)
+	if err != nil {		
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	//test:
 	//
-	s.GetUserFromStore(c)
+	c.JSON(http.StatusOK, data)
 	//
-	c.HTML(http.StatusOK, "test.gohtml", gin.H{
-		"title": "Test",
-	})
 }
 
 func (s *Server) SingIn(c *gin.Context){
 	var tmpUser, user User
 	var err error
 
-	err = c.ShouldBindJSON(&tmpUser)
+	err = c.ShouldBind(&tmpUser)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"message": err.Error(),
@@ -157,7 +151,6 @@ func (s *Server) SingIn(c *gin.Context){
 		return
 	}
 
-	//auth
 	err = s.DB.Where("email = ?", tmpUser.Email).First(&user).Error
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -174,55 +167,34 @@ func (s *Server) SingIn(c *gin.Context){
 		return
 	}
 
-	// token, err := CreateToken(user.ID)
-	// if err != nil {
-	//    	c.JSON(http.StatusUnprocessableEntity, gin.H{
-	// 		"message": err.Error(),
-	// 	})
-	//    return
-	// }
-	// c.Redirect(http.StatusOK, "/")
+	token, err := CreateToken(user.ID)
+	if err != nil {
+	   	c.JSON(http.StatusInternalServerError, gin.H{
+			"message": err.Error(),
+		})
+	   return
+	}
+	liveTime := 60 * 60 * 1000 // 1 hour
+	c.SetCookie("session", token, liveTime, "/", os.Getenv("URL"), false, true)
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Login succesfull",
 	})
 }
 
 func (s *Server) SingOut(c *gin.Context){
-	
-	c.Redirect(http.StatusOK, "/")
-}
-
-func (s *Server) AddUserToStore(c *gin.Context, userID uint64){
-	session, err := s.Store.Get(c.Request, "mind-map-session")
-	if err != nil {
-		fmt.Println("store error:", err.Error())
-		//json internal server error
-		return
-	}
-	session.Values["user_id"] = userID
-	session.Values["user_role"] = "admin" 
-	//termin wygasania sesji
-	session.Values["exp"] = time.Now().Add(time.Hour * 1).Unix()
-	s.Store.Save(c.Request, c.Writer, session)
-}
-
-func (s *Server) GetUserFromStore(c *gin.Context){
-	session, err := s.Store.Get(c.Request, "mind-map-session")
-	if err != nil {
-		fmt.Println("store error:", err.Error())
-		//json internal server error
-		return
-	}
-	userID := session.Values["user_id"].(uint64)
-	userRole := session.Values["user_role"].(string)
-	fmt.Println("logged user:", userID, "(", userRole, ")")
+	c.SetCookie("session", "", -1, "/", os.Getenv("URL"), false, true)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Logout succesfull",
+	})
 }
 
 
-func isLoggedIn() gin.HandlerFunc {	
+func isAuthorized() gin.HandlerFunc {	
 	return func (c *gin.Context){
-		_, err := c.Cookie("mind-map-session")
-		if err != nil {
+		// _, err := c.Cookie("session")
+		token, err := c.Cookie("session")
+		if err != nil && TokenValid(token) != nil{
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"message": "Unauthorized",
 			})
@@ -230,20 +202,61 @@ func isLoggedIn() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
 
-	// session, err := s.Store.Get(c.Request, "session")
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{
-	// 		"message": err.Error(),
-	// 	})
-	// 	return
-	// }
-
-	// userID := session.Values["user_id"].(uint64)
-	// userRole := session.Values["role"].(string)
+func CreateToken(userID uint64) (string, error) {
+	token := jwt.New(jwt.SigningMethodHS256)
+	claims := token.Claims.(jwt.MapClaims)
 	
-	// license := session.Values["license_type"].(bool)
-	//!!!licencja z bazy
+	claims["authorized"] = true
+	claims["user_id"] = userID
+	claims["exp"] = time.Now().Add(time.Hour * 1).Unix()
 
+	return token.SignedString([]byte(os.Getenv("API_SECRET")))
+}
 
+func TokenValid(tokenString string) error {
+	_, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(os.Getenv("API_SECRET")), nil
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) GetDataFromToken(tokenString string) (User, error) {
+	var err error
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return User{}, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(os.Getenv("API_SECRET")), nil
+	})
+	if err != nil {
+		return User{}, err
+	}
+
+	var user User
+	claims, ok := token.Claims.(jwt.MapClaims)
+
+	if !ok || !token.Valid {
+		return User{}, errors.New("Token not valid")
+	}
+
+	userID, err := strconv.ParseUint(fmt.Sprintf("%.0f", claims["user_id"]), 10, 64)
+	if err != nil {
+		return User{}, err
+	}
+	fmt.Println("userid: ", uint64(userID))
+
+	err = s.DB.First(&user, uint64(userID)).Error
+	if err != nil {		
+		return User{}, err
+	}
+
+	return user, nil
 }
